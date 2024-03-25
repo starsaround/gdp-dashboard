@@ -1,151 +1,83 @@
-import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
-
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP Dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
-
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
-
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP Dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
+import streamlit as st
+import yfinance
 
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+@st.cache_resource
+def load_data():
+    components = pd.read_html('https://en.wikipedia.org/wiki/List_of_S'
+                    '%26P_500_companies')[0]
+    return components.set_index('Symbol')
 
-st.header(f'GDP in {to_year}', divider='gray')
 
-''
+@st.cache_resource
+def load_quotes(asset):
+    return yfinance.download(asset)
 
-cols = st.columns(4)
 
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
+def main():
+    components = load_data()
+    title = st.empty()
+    st.sidebar.title("Options")
 
-    with col:
-        first_gdp = first_year[gdp_df['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[gdp_df['Country Code'] == country]['GDP'].iat[0] / 1000000000
+    def label(symbol):
+        a = components.loc[symbol]
+        return symbol + ' - ' + a.Security
 
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+    if st.sidebar.checkbox('View companies list'):
+        st.dataframe(components[['Security',
+                                 'GICS Sector',
+                                 'Date added',
+                                 'Founded']])
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+    st.sidebar.subheader('Select asset')
+    asset = st.sidebar.selectbox('Click below to select a new asset',
+                                 components.index.sort_values(), index=3,
+                                 format_func=label)
+    title.title(components.loc[asset].Security)
+    if st.sidebar.checkbox('View company info', True):
+        st.table(components.loc[asset])
+    data0 = load_quotes(asset)
+    data = data0.copy().dropna()
+    data.index.name = None
+
+    section = st.sidebar.slider('Number of quotes', min_value=30,
+                        max_value=min([2000, data.shape[0]]),
+                        value=500,  step=10)
+
+    data2 = data[-section:]['Adj Close'].to_frame('Adj Close')
+
+    sma = st.sidebar.checkbox('SMA')
+    if sma:
+        period= st.sidebar.slider('SMA period', min_value=5, max_value=500,
+                             value=20,  step=1)
+        data[f'SMA {period}'] = data['Adj Close'].rolling(period ).mean()
+        data2[f'SMA {period}'] = data[f'SMA {period}'].reindex(data2.index)
+
+    sma2 = st.sidebar.checkbox('SMA2')
+    if sma2:
+        period2= st.sidebar.slider('SMA2 period', min_value=5, max_value=500,
+                             value=100,  step=1)
+        data[f'SMA2 {period2}'] = data['Adj Close'].rolling(period2).mean()
+        data2[f'SMA2 {period2}'] = data[f'SMA2 {period2}'].reindex(data2.index)
+
+    st.subheader('Chart')
+    st.line_chart(data2)
+
+    if st.sidebar.checkbox('View statistic'):
+        st.subheader('Statistic')
+        st.table(data2.describe())
+
+    if st.sidebar.checkbox('View quotes'):
+        st.subheader(f'{asset} historical data')
+        st.write(data2)
+
+    st.sidebar.title("About")
+    st.sidebar.info('This app is a simple example of '
+                    'using Strealit to create a financial data web app.\n'
+                    '\nIt is maintained by [Paduel]('
+                    'https://twitter.com/paduel_py).\n\n'
+                    'Check the code at https://github.com/paduel/streamlit_finance_chart')
+
+if __name__ == '__main__':
+    main()
