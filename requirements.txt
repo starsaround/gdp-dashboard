@@ -1,3 +1,4 @@
 streamlit-nightly
 pandas
 yfinance
+akshare
